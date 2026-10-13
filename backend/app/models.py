@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Float, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -115,3 +115,67 @@ class Evaluation(Timestamped):
     evaluator: Mapped[str] = mapped_column(String(100))
     score: Mapped[float] = mapped_column(Float)
     details: Mapped[dict] = mapped_column(JSON)
+
+
+class TelemetryEvent(Timestamped):
+    __tablename__ = "telemetry_events"
+    event_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    environment: Mapped[str] = mapped_column(String(32), index=True)
+    service: Mapped[str] = mapped_column(String(80), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    request_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    span_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    parent_span_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    agent_name: Mapped[str | None] = mapped_column(String(100), index=True)
+    tool_name: Mapped[str | None] = mapped_column(String(100), index=True)
+    model_name: Mapped[str | None] = mapped_column(String(100), index=True)
+    status: Mapped[str | None] = mapped_column(String(40), index=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    data_origin: Mapped[str] = mapped_column(String(16), default="LIVE", index=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    __table_args__ = (
+        Index("ix_telemetry_created_type", "created_at", "event_type"),
+        Index("ix_telemetry_trace_created", "trace_id", "created_at"),
+        Index("ix_telemetry_workflow_created", "workflow_id", "created_at"),
+    )
+
+
+class DriftObservation(Timestamped):
+    __tablename__ = "drift_observations"
+    observation_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    drift_type: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    reference_window: Mapped[str] = mapped_column(String(80))
+    current_window: Mapped[str] = mapped_column(String(80))
+    score: Mapped[float | None] = mapped_column(Float)
+    threshold: Mapped[float | None] = mapped_column(Float)
+    data_origin: Mapped[str] = mapped_column(String(16), default="LIVE", index=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AlertRule(Timestamped):
+    __tablename__ = "alert_rules"
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    metric: Mapped[str] = mapped_column(String(80), index=True)
+    operator: Mapped[str] = mapped_column(String(8))
+    threshold: Mapped[float] = mapped_column(Float)
+    severity: Mapped[str] = mapped_column(String(16))
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    enabled: Mapped[bool] = mapped_column(default=True)
+
+
+class AlertEvent(Timestamped):
+    __tablename__ = "alert_events"
+    alert_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    rule_name: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(160), index=True)
+    observed_value: Mapped[float | None] = mapped_column(Float)
+    data_origin: Mapped[str] = mapped_column(String(16), default="LIVE", index=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)

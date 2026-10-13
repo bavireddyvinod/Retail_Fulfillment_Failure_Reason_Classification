@@ -41,3 +41,14 @@ def redis_health() -> str:
         return "ok" if _client.ping() else "unavailable"
     except redis.RedisError:
         return "unavailable"
+
+
+def consume_rate_limit(key: str, limit: int, window_seconds: int = 60) -> int | None:
+    try:
+        pipe = _client.pipeline(transaction=True)
+        pipe.incr(key)
+        pipe.expire(key, window_seconds, nx=True)
+        count, _ = pipe.execute()
+        return int(count) if count <= limit else 0
+    except redis.RedisError:
+        return None

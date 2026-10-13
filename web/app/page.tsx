@@ -46,7 +46,7 @@ type CaseReport = {
   classification: { failure_reason: string; root_cause_category: string; evidence: string[]; confidence: number };
   evidence?: string[];
   confidence: number;
-  actions: { action: string; status: string; reference?: string }[];
+  actions: { action_id?: string; action: string; status: string; reference?: string }[];
   approval: { required: boolean; status: string; reason?: string };
   citations: Citation[];
   validation?: { decision: string; issues: string[] };
@@ -56,48 +56,6 @@ type CaseReport = {
 type DashboardData = { metrics: Record<string, number>; investigations: CaseReport[] };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-const exampleCases: CaseReport[] = [
-  {
-    workflow_id: "demo-1001",
-    status: "completed",
-    order: { order_id: "ORD-10482", customer_name: "Jordan Lee", fulfillment_center: "FC-West-04", promised_delivery: "2026-10-12", order_total: 129.99 },
-    summary: "A weather disruption at the regional hub delayed the parcel beyond its promised delivery date.",
-    classification: { failure_reason: "Carrier Delay", root_cause_category: "carrier", evidence: ["Carrier tracking reports delayed at Regional hub (Oct 12, 16:45 UTC).", "Carrier update WX confirms a weather disruption at the regional hub."], confidence: 0.84 },
-    confidence: 0.84,
-    actions: [{ action: "Contact carrier for updated delivery commitment", status: "recommended" }, { action: "Operations ticket OPS-10482", status: "created", reference: "OPS-10482" }],
-    approval: { required: false, status: "not_required" },
-    citations: [{ document_id: "carrier-sop", title: "Carrier Exception and Delay SOP", source: "carrier-sop.md", section: "Weather and network disruptions", page: 1, quote: "Verify the most recent carrier scan and the published service commitment before assigning a delivery failure." }],
-    validation: { decision: "PASS", issues: [] },
-    generated_at: "2026-10-13T09:42:00Z",
-  },
-  {
-    workflow_id: "demo-1002",
-    status: "awaiting_approval",
-    order: { order_id: "ORD-10531", customer_name: "Avery Morgan", fulfillment_center: "FC-Central-02", promised_delivery: "2026-10-11", order_total: 648 },
-    summary: "A high-value order has conflicting inventory allocation and pick scan evidence.",
-    classification: { failure_reason: "Inventory Allocation Error", root_cause_category: "inventory", evidence: ["Reservation references a different fulfillment center than the order allocation.", "Pick confirmation is missing for item HME-2208."], confidence: 0.61 },
-    confidence: 0.61,
-    actions: [{ action: "Reconcile stock reservations", status: "pending approval" }, { action: "Reallocate inventory", status: "pending approval" }],
-    approval: { required: true, status: "pending", reason: "Low confidence and material order value require reviewer approval." },
-    citations: [{ document_id: "inventory-policy", title: "Inventory Availability and Allocation Policy", source: "inventory-policy.md", section: "Allocation discrepancy", page: 2, quote: "Preserve the order, SKU, fulfillment center, and movement reference. Reconcile the reservation before reallocating stock." }],
-    validation: { decision: "PASS", issues: [] },
-    generated_at: "2026-10-13T08:17:00Z",
-  },
-  {
-    workflow_id: "demo-1003",
-    status: "completed",
-    order: { order_id: "ORD-10396", customer_name: "Casey Rivera", fulfillment_center: "FC-East-01", promised_delivery: "2026-10-12", order_total: 84.5 },
-    summary: "The customer reported transit damage after carrier handoff; warehouse packing records need review.",
-    classification: { failure_reason: "Damaged Product", root_cause_category: "warehouse_or_transit", evidence: ["Customer damage report was recorded after delivery.", "Pack scan exists; package inspection image is not attached."], confidence: 0.73 },
-    confidence: 0.73,
-    actions: [{ action: "Inspect transit and packing records", status: "recommended" }, { action: "Warehouse ticket OPS-10396", status: "created", reference: "OPS-10396" }],
-    approval: { required: false, status: "not_required" },
-    citations: [{ document_id: "warehouse-sop", title: "Warehouse Fulfillment SOP", source: "warehouse-sop.md", section: "Damaged product", page: 2, quote: "Record whether damage was reported before carrier handoff or after delivery." }],
-    validation: { decision: "PASS", issues: [] },
-    generated_at: "2026-10-12T17:26:00Z",
-  },
-];
 
 function shortDate(value?: string) {
   if (!value) return "Just now";
@@ -111,9 +69,9 @@ function statusLabel(status: string) {
 }
 
 export default function Home() {
-  const [cases, setCases] = useState(exampleCases);
-  const [selectedId, setSelectedId] = useState(exampleCases[0].workflow_id);
-  const [metrics, setMetrics] = useState({ investigations: 24, awaiting_approval: 3, high_confidence: 18, sla_risk: 2 });
+  const [cases, setCases] = useState<CaseReport[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [metrics, setMetrics] = useState({ investigations: 0, awaiting_approval: 0, high_confidence: 0, sla_risk: 0 });
   const [isConnected, setIsConnected] = useState(false);
   const [query, setQuery] = useState("");
   const [orderId, setOrderId] = useState("");
@@ -123,6 +81,8 @@ export default function Home() {
   const [filter, setFilter] = useState("All cases");
   const [search, setSearch] = useState("");
   const [approvalComment, setApprovalComment] = useState("");
+  const [approvedActionIds, setApprovedActionIds] = useState<string[]>([]);
+  const [loadError, setLoadError] = useState("");
 
   const selectedCase = cases.find((item) => item.workflow_id === selectedId) ?? cases[0];
   const visibleCases = useMemo(() => {
@@ -142,11 +102,15 @@ export default function Home() {
       })
       .then((data) => {
         setIsConnected(true);
-        setCases(data.investigations.length ? data.investigations : exampleCases);
+        setLoadError("");
+        setCases(data.investigations);
         setMetrics((current) => ({ ...current, ...data.metrics }));
         if (data.investigations[0]?.workflow_id) setSelectedId(data.investigations[0].workflow_id);
       })
-      .catch(() => setIsConnected(false));
+      .catch(() => {
+        setIsConnected(false);
+        setLoadError("Live case data is unavailable. Check the API connection.");
+      });
   }, []);
 
   async function submitInvestigation(event: FormEvent<HTMLFormElement>) {
@@ -178,26 +142,17 @@ export default function Home() {
   async function submitApproval(decision: "approved" | "rejected") {
     if (!selectedCase) return;
     setNotice("");
-    if (!isConnected || selectedCase.workflow_id.startsWith("demo-")) {
-      setCases((current) => current.map((item) => item.workflow_id === selectedCase.workflow_id ? {
-        ...item,
-        status: decision === "approved" ? "completed" : "rejected",
-        approval: { ...item.approval, status: decision },
-        actions: decision === "approved" ? item.actions.map((action) => ({ ...action, status: "approved" })) : item.actions,
-      } : item));
-      setNotice(decision === "approved" ? "Recommendation approved. Actions are authorized for execution." : "Recommendation rejected. No actions were executed.");
-      return;
-    }
     try {
       const response = await fetch(`${API_URL}/api/investigations/${selectedCase.workflow_id}/approval`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, comment: approvalComment }),
+        body: JSON.stringify({ decision, comment: approvalComment, approved_action_ids: decision === "approved" ? approvedActionIds : [] }),
       });
       if (!response.ok) throw new Error("Approval could not be recorded.");
       const report = (await response.json()) as CaseReport;
       setCases((current) => current.map((item) => item.workflow_id === report.workflow_id ? report : item));
       setApprovalComment("");
+      setApprovedActionIds([]);
       setNotice(decision === "approved" ? "Recommendation approved and actions executed." : "Recommendation rejected. No actions were executed.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Approval could not be recorded.");
@@ -218,11 +173,11 @@ export default function Home() {
         </div>
         <div className="nav-label">WORKSPACE</div>
         <nav className="primary-nav" aria-label="Main navigation">
-          <a className="nav-item active" href="#overview"><Activity size={17} /><span>Case desk</span><span className="nav-count">24</span></a>
-          <a className="nav-item" href="#investigations" onClick={() => setFilter("Needs review")}><ShieldAlert size={17} /><span>Needs review</span><span className="nav-count alert-count">3</span></a>
+          <a className="nav-item active" href="#overview"><Activity size={17} /><span>Case desk</span><span className="nav-count">{metrics.investigations}</span></a>
+          <a className="nav-item" href="#investigations" onClick={() => setFilter("Needs review")}><ShieldAlert size={17} /><span>Needs review</span><span className="nav-count alert-count">{metrics.awaiting_approval}</span></a>
           <a className="nav-item" href="#investigations"><Truck size={17} /><span>Shipment exceptions</span></a>
           <a className="nav-item" href="#evidence"><FileText size={17} /><span>Policy library</span></a>
-          <a className="nav-item" href="#activity"><Gauge size={17} /><span>Quality &amp; health</span></a>
+          <a className="nav-item" href="/observability"><Gauge size={17} /><span>Observability</span></a>
         </nav>
         <div className="sidebar-spacer" />
         <div className="agent-status">
@@ -257,10 +212,10 @@ export default function Home() {
           </section>
 
           <section className="metrics-grid" aria-label="Operations summary">
-            <div className="metric-card metric-active"><div className="metric-top"><span>OPEN INVESTIGATIONS</span><Activity size={16} /></div><div className="metric-value">{metrics.investigations.toString().padStart(2, "0")}<span className="metric-change positive">+4 this shift</span></div><div className="metric-foot"><span className="mini-bars"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></span><span>vs. previous shift</span></div></div>
+            <div className="metric-card metric-active"><div className="metric-top"><span>INVESTIGATIONS</span><Activity size={16} /></div><div className="metric-value">{metrics.investigations.toString().padStart(2, "0")}<span className="metric-change">Live records</span></div><div className="metric-foot"><span className="metric-foot-dot green" />All tracked cases</div></div>
             <div className="metric-card"><div className="metric-top"><span>AWAITING REVIEW</span><ShieldAlert size={16} /></div><div className="metric-value">{metrics.awaiting_approval.toString().padStart(2, "0")}<span className="metric-change warning">Needs attention</span></div><div className="metric-foot"><span className="metric-foot-dot amber" />Human decision required</div></div>
             <div className="metric-card"><div className="metric-top"><span>HIGH CONFIDENCE</span><BadgeCheck size={16} /></div><div className="metric-value">{metrics.high_confidence.toString().padStart(2, "0")}<span className="metric-change">of {metrics.investigations.toString().padStart(2, "0")} cases</span></div><div className="metric-foot"><span className="metric-foot-dot green" />Classification ≥ 80%</div></div>
-            <div className="metric-card metric-sla"><div className="metric-top"><span>SLA AT RISK</span><Clock3 size={16} /></div><div className="metric-value">{metrics.sla_risk.toString().padStart(2, "0")}<span className="metric-change risk">Due within 4h</span></div><div className="metric-foot"><span className="metric-foot-dot red" />Carrier &amp; delivery cases</div></div>
+            <div className="metric-card metric-sla"><div className="metric-top"><span>SLA BREACH CLASSIFICATIONS</span><Clock3 size={16} /></div><div className="metric-value">{metrics.sla_risk.toString().padStart(2, "0")}<span className="metric-change risk">Classified</span></div><div className="metric-foot"><span className="metric-foot-dot red" />From persisted reports</div></div>
           </section>
 
           <section className="case-desk" id="investigations">
@@ -271,7 +226,8 @@ export default function Home() {
                 <button className="filter-select" type="button" onClick={() => setFilter(filter === "All cases" ? "Needs review" : "All cases")}>{filter}<ChevronDown size={14} /></button>
               </div>
               <div className="case-list">
-                {visibleCases.length === 0 && <div className="empty-list">No investigations match this view.</div>}
+                {loadError && <div className="empty-list" role="status">{loadError}</div>}
+                {!loadError && visibleCases.length === 0 && <div className="empty-list">No live investigations recorded.</div>}
                 {visibleCases.map((item) => (
                   <button className={`case-row ${selectedId === item.workflow_id ? "selected" : ""}`} key={item.workflow_id} type="button" onClick={() => { setSelectedId(item.workflow_id); setNotice(""); }}>
                     <div className="case-row-top"><span className={`case-status-dot ${item.approval.status === "pending" ? "pending" : "resolved"}`} /><span className="case-id">{item.order.order_id}</span><span className="case-age">{shortDate(item.generated_at)}</span></div>
@@ -295,9 +251,9 @@ export default function Home() {
 
               <div className="report-section citation-section"><div className="section-title-row"><div><span className="section-kicker">03 / POLICY GROUNDED</span><h3>Relevant procedures</h3></div><button className="text-link" type="button" onClick={() => setNotice("Policy library connected to the current investigation.")}>Policy library <ExternalLink size={13} /></button></div><div className="citation-list">{selectedCase.citations.length ? selectedCase.citations.map((citation, index) => <div className="citation-item" key={`${citation.document_id}-${index}`}><span className="citation-icon"><FileText size={15} /></span><div className="citation-content"><strong>{citation.title ?? citation.source}</strong><span>{citation.section} <i>·</i> {citation.source}{citation.page ? ` · p. ${citation.page}` : ""}</span><p>“{citation.quote}”</p></div><span className="citation-number">[{index + 1}]</span></div>) : <div className="citation-empty">No policy excerpts were returned for this investigation.</div>}</div></div>
 
-              {selectedCase.approval.status === "pending" && <div className="approval-box"><div className="approval-icon"><ShieldAlert size={17} /></div><div className="approval-copy"><strong>Human review required</strong><span>{selectedCase.approval.reason ?? "Confirm the recommendation before action is taken."}</span></div><textarea aria-label="Reviewer note" value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} placeholder="Add a review note (optional)" rows={1} /><button className="reject-button" type="button" onClick={() => submitApproval("rejected")}>Reject</button><button className="approve-button" type="button" onClick={() => submitApproval("approved")}><Check size={14} /> Approve</button></div>}
+              {selectedCase.approval.status === "pending" && <div className="approval-box"><div className="approval-icon"><ShieldAlert size={17} /></div><div className="approval-copy"><strong>Human review required</strong><span>{selectedCase.approval.reason ?? "Select the exact proposed actions to authorize."}</span></div><div className="approval-actions">{selectedCase.actions.map((action) => <label key={action.action_id ?? action.action}><input type="checkbox" checked={Boolean(action.action_id && approvedActionIds.includes(action.action_id))} onChange={(event) => { if (!action.action_id) return; setApprovedActionIds((current) => event.target.checked ? [...current, action.action_id!] : current.filter((id) => id !== action.action_id)); }} />{action.action}</label>)}</div><textarea aria-label="Reviewer note" value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} placeholder="Add a review note (optional)" rows={1} /><button className="reject-button" type="button" onClick={() => submitApproval("rejected")}>Reject</button><button className="approve-button" type="button" disabled={!approvedActionIds.length} onClick={() => submitApproval("approved")}><Check size={14} /> Approve selected</button></div>}
 
-              <div className="report-section actions-section"><div className="section-title-row"><div><span className="section-kicker">04 / FOLLOW-THROUGH</span><h3>Recommended actions</h3></div><span className="action-count">{selectedCase.actions.length} actions</span></div><div className="action-list">{selectedCase.actions.map((action, index) => <div className="action-item" key={`${action.action}-${index}`}><span className={`action-check ${action.status === "created" || action.status === "approved" ? "done" : ""}`}>{action.status === "created" || action.status === "approved" ? <Check size={13} /> : <span>{index + 1}</span>}</span><span className="action-name">{action.action}</span><span className={`action-state ${action.status === "created" ? "state-done" : ""}`}>{action.reference ?? action.status}</span></div>)}</div></div>
+              <div className="report-section actions-section"><div className="section-title-row"><div><span className="section-kicker">04 / FOLLOW-THROUGH</span><h3>Recommended actions</h3></div><span className="action-count">{selectedCase.actions.length} actions</span></div><div className="action-list">{selectedCase.actions.map((action, index) => <div className="action-item" key={`${action.action}-${index}`}><span className={`action-check ${action.status === "executed" ? "done" : ""}`}>{action.status === "executed" ? <Check size={13} /> : <span>{index + 1}</span>}</span><span className="action-name">{action.action}</span><span className={`action-state ${action.status === "executed" ? "state-done" : ""}`}>{action.reference ?? action.status}</span></div>)}</div></div>
 
               <footer className="report-footer"><span><ShieldCheck size={14} /> Evidence validated · {selectedCase.validation?.decision ?? "PASS"}</span><span>Generated {shortDate(selectedCase.generated_at)}</span></footer>
             </article>}

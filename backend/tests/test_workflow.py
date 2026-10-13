@@ -41,6 +41,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result["tool_results"], [])
         self.assertEqual(result["final_response"]["status"], "blocked")
 
+    def test_missing_order_id_stops_before_operational_tools(self):
+        result = workflow.invoke({
+            "workflow_id": "missing-order-workflow",
+            "user_query": "A shipment is late after a carrier weather delay",
+            "tool_results": [],
+            "errors": [],
+            "agent_trace": [],
+            "retry_count": 0,
+        })
+
+        self.assertEqual(result["status"], "needs_information")
+        self.assertEqual(result["triage"]["missing_information"], ["order_id"])
+        self.assertEqual(result["tool_results"], [])
+
     def test_uncertain_classification_waits_for_approval(self):
         original_threshold = settings.confidence_review_threshold
         settings.confidence_review_threshold = 0.9
@@ -59,7 +73,9 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "awaiting_approval")
         self.assertEqual(result["human_approval"]["status"], "pending")
-        self.assertEqual(result.get("proposed_actions", []), [])
+        self.assertTrue(result["proposed_actions"])
+        self.assertTrue(all(action["status"] == "proposed" for action in result["proposed_actions"]))
+        self.assertFalse(result.get("executed_actions", []))
 
     def test_retrieved_policy_has_citable_metadata(self):
         context, citations = retrieve_policy_context("carrier weather delivery delay policy", "shipment")

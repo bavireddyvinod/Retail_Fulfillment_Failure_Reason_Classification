@@ -1,7 +1,11 @@
 import json
 from typing import Any
+from uuid import uuid4
 
 from langchain_core.tools import tool
+
+from app.guardrails import validate_tool_invocation
+from app.observability import emit_event, end_span, record_error, start_span
 
 
 @tool
@@ -109,10 +113,53 @@ def generate_case_report(order_id: str, summary: str) -> str:
     return json.dumps({"report_id": f"RPT-{order_id[-5:]}", "status": "generated", "summary": summary})
 
 
-def invoke_tool(agent: str, selected_tool: Any, arguments: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
-    raw_result = selected_tool.invoke(arguments)
+def invoke_tool(
+    agent: str,
+    selected_tool: Any,
+    arguments: dict[str, Any],
+    *,
+    authorized_write: bool = False,
+    context: dict | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    context = context or {}
+    span_id = str(uuid4())
+    started = start_span(context, selected_tool.name, "tool", span_id)
     try:
-        result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-    except json.JSONDecodeError:
-        result = {"result": raw_result}
-    return result, {"agent": agent, "tool": selected_tool.name, "arguments": arguments, "result": result}
+        validate_tool_invocation(selected_tool.name, arguments, selected_tool.args_schema, authorized_write, context)
+        raw_result = selected_tool.invoke(arguments)
+        try:
+            result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except json.JSONDecodeError:
+            result = {"result": raw_result}
+        end_span(context, selected_tool.name, "tool", span_id, started, "completed", {"agent_name": agent})
+        emit_event(
+            "tool.call",
+            request_id=context.get("request_id"),
+            trace_id=context.get("trace_id"),
+            span_id=span_id,
+            parent_span_id=context.get("root_span_id") or context.get("trace_id"),
+            workflow_id=context.get("workflow_id"),
+            user_id=context.get("user_id"),
+            agent_name=agent,
+            tool_name=selected_tool.name,
+            status="success",
+            details={"argument_keys": sorted(arguments), "result_keys": sorted(result) if isinstance(result, dict) else [], "write_authorized": authorized_write},
+        )
+        return result, {"agent": agent, "tool": selected_tool.name, "arguments": arguments, "result": result}
+    except Exception as error:
+        end_span(context, selected_tool.name, "tool", span_id, started, "error", {"agent_name": agent, "error_type": type(error).__name__})
+        record_error(context, f"tool:{selected_tool.name}", error)
+        emit_event(
+            "tool.call",
+            severity="ERROR",
+            request_id=context.get("request_id"),
+            trace_id=context.get("trace_id"),
+            span_id=span_id,
+            workflow_id=context.get("workflow_id"),
+            user_id=context.get("user_id"),
+            agent_name=agent,
+            tool_name=selected_tool.name,
+            status="error",
+            details={"error_type": type(error).__name__},
+        )
+        raise

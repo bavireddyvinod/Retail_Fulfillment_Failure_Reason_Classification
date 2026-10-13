@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -18,6 +20,7 @@ def persist_state(state: dict) -> None:
     workflow_id = state["workflow_id"]
     with SessionLocal.begin() as session:
         workflow_record = session.query(Workflow).filter_by(workflow_id=workflow_id).one_or_none()
+        previous_state = workflow_record.state if workflow_record else {}
         values = {
             "session_id": state.get("session_id", ""),
             "user_id": state.get("user_id", "demo-analyst"),
@@ -30,19 +33,34 @@ def persist_state(state: dict) -> None:
                 setattr(workflow_record, key, value)
         else:
             session.add(Workflow(workflow_id=workflow_id, **values))
+        prior_run_ids = {entry.get("agent_run_id") for entry in previous_state.get("agent_trace", [])}
         for entry in state.get("agent_trace", []):
-            session.add(AgentRun(workflow_id=workflow_id, agent_name=entry["agent"], details=entry))
+            if entry.get("agent_run_id") not in prior_run_ids:
+                session.add(AgentRun(workflow_id=workflow_id, agent_name=entry["agent"], details=entry))
+        prior_tool_calls = {
+            json.dumps([entry.get("tool"), entry.get("arguments"), entry.get("result")], sort_keys=True, default=str)
+            for entry in previous_state.get("tool_results", [])
+        }
         for entry in state.get("tool_results", []):
-            session.add(ToolCall(workflow_id=workflow_id, tool_name=entry["tool"], arguments=entry["arguments"], result=entry["result"]))
+            fingerprint = json.dumps([entry.get("tool"), entry.get("arguments"), entry.get("result")], sort_keys=True, default=str)
+            if fingerprint not in prior_tool_calls:
+                session.add(ToolCall(workflow_id=workflow_id, tool_name=entry["tool"], arguments=entry["arguments"], result=entry["result"]))
+                prior_tool_calls.add(fingerprint)
         classification = state.get("classification_result", {})
         if classification:
-            session.add(FulfillmentFailure(
-                workflow_id=workflow_id,
-                order_id=state.get("order_id", ""),
-                failure_reason=classification.get("failure_reason", "Unknown"),
-                confidence=classification.get("confidence", 0),
-                evidence=classification.get("evidence", []),
-            ))
+            failure = session.query(FulfillmentFailure).filter_by(workflow_id=workflow_id).one_or_none()
+            if failure is None:
+                session.add(FulfillmentFailure(
+                    workflow_id=workflow_id,
+                    order_id=state.get("order_id", ""),
+                    failure_reason=classification.get("failure_reason", "Unknown"),
+                    confidence=classification.get("confidence", 0),
+                    evidence=classification.get("evidence", []),
+                ))
+            else:
+                failure.failure_reason = classification.get("failure_reason", "Unknown")
+                failure.confidence = classification.get("confidence", 0)
+                failure.evidence = classification.get("evidence", [])
         if state.get("final_response"):
             report = session.query(InvestigationReport).filter_by(workflow_id=workflow_id).one_or_none()
             if report:
