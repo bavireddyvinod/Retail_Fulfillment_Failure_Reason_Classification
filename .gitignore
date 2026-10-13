@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite3
+.env
+.venv/
+venv/
+.chroma/
+*.log
+.DS_Store
+
+web/.env.local
+web/node_modules/
+web/.next/
+web/out/
+web/coverage/
