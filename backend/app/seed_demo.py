@@ -24,7 +24,7 @@ def seed_demo() -> int:
         ("database.metric", "INFO", "sampled"),
     ]
     with SessionLocal.begin() as session:
-        existing = session.query(TelemetryEvent).filter_by(data_origin="DEMO").count()
+        existing = session.query(TelemetryEvent).filter_by(data_origin="DEMO", environment="demo").count()
         if existing:
             return existing
         for index in range(72):

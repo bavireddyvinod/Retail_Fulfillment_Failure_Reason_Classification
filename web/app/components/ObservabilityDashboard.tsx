@@ -8,7 +8,7 @@ export type ObservabilityView = "overview" | "logs" | "metrics" | "traces" | "dr
 type DataRecord = Record<string, unknown>;
 type DashboardPayload = DataRecord & { items?: DataRecord[]; requests?: DataRecord; llm?: DataRecord; agents?: DataRecord; tools?: DataRecord; rag?: DataRecord; infrastructure?: DataRecord; database?: DataRecord; pending?: DataRecord[]; decisions?: DataRecord[]; spans?: DataRecord[]; snapshot?: DataRecord; total?: number; blocked?: number };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_URL = "/api/backend";
 const routes: { key: ObservabilityView; label: string; href: string }[] = [
   { key: "overview", label: "Overview", href: "/observability" },
   { key: "logs", label: "Logs", href: "/logs" },

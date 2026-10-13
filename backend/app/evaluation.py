@@ -26,6 +26,7 @@ def run_evaluation_suite() -> dict:
             "workflow_id": workflow_id,
             "session_id": f"eval-{workflow_id}",
             "user_id": "evaluation-runner",
+            "data_origin": "DEMO",
             "user_query": sample["query"],
             "order_id": sample["order_id"],
             "tool_results": [],
@@ -48,6 +49,7 @@ def run_evaluation_suite() -> dict:
     count = len(results)
     return {
         "suite": "fulfillment-golden-v1",
+        "dataset_origin": "SYNTHETIC_DEMO",
         "count": count,
         "accuracy": round(sum(result["correct"] for result in results) / count, 3) if count else 0,
         "mean_confidence": round(sum(result["confidence"] for result in results) / count, 3) if count else 0,

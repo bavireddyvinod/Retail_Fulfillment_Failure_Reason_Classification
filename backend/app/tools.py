@@ -6,11 +6,22 @@ from langchain_core.tools import tool
 
 from app.guardrails import validate_tool_invocation
 from app.observability import emit_event, end_span, record_error, start_span
+from app.config import settings
+
+
+class OperationalAdapterUnavailable(RuntimeError):
+    pass
+
+
+def _require_demo_adapter():
+    if settings.app_env.lower() in {"production", "prod"}:
+        raise OperationalAdapterUnavailable("No authenticated operational-system adapter is configured; synthetic fixture data is disabled in production")
 
 
 @tool
 def get_order(order_id: str) -> str:
     """Retrieve order, item, payment, and fulfillment details for an order ID."""
+    _require_demo_adapter()
     item_sku = "SKU-OOS" if order_id.endswith("999") else "HME-4402"
     item_name = "Outdoor Lantern" if item_sku == "SKU-OOS" else "Modular Storage Shelf"
     return json.dumps({
@@ -29,12 +40,14 @@ def get_order(order_id: str) -> str:
 @tool
 def get_customer(customer_id: str) -> str:
     """Retrieve customer service and delivery preferences by customer ID."""
+    _require_demo_adapter()
     return json.dumps({"customer_id": customer_id, "tier": "standard", "preferred_contact": "email"})
 
 
 @tool
 def get_order_events(order_id: str) -> str:
     """Retrieve the order's fulfillment and customer-service event timeline."""
+    _require_demo_adapter()
     events = [
         {"timestamp": "2026-10-09T08:10:00Z", "event": "Order placed"},
         {"timestamp": "2026-10-10T11:24:00Z", "event": "Picked and packed at FC-West-04"},
@@ -48,6 +61,7 @@ def get_order_events(order_id: str) -> str:
 @tool
 def get_inventory(sku: str, fulfillment_center: str) -> str:
     """Check available and allocated stock for an item at a fulfillment center."""
+    _require_demo_adapter()
     if sku == "SKU-OOS":
         return json.dumps({"sku": sku, "fulfillment_center": fulfillment_center, "on_hand": 0, "available": 0, "reserved": 0})
     return json.dumps({"sku": sku, "fulfillment_center": fulfillment_center, "on_hand": 8, "available": 6, "reserved": 2})
@@ -56,18 +70,21 @@ def get_inventory(sku: str, fulfillment_center: str) -> str:
 @tool
 def get_inventory_movements(sku: str, fulfillment_center: str) -> str:
     """Retrieve recent receipts, picks, adjustments, and transfers for an item."""
+    _require_demo_adapter()
     return json.dumps([{"timestamp": "2026-10-10T11:20:00Z", "type": "pick", "quantity": -1, "reference": "PICK-8812"}])
 
 
 @tool
 def get_stock_reservations(sku: str, fulfillment_center: str) -> str:
     """Retrieve active stock reservations for an item and fulfillment center."""
+    _require_demo_adapter()
     return json.dumps([{"order_id": "ORD-10482", "sku": sku, "quantity": 1, "status": "allocated"}])
 
 
 @tool
 def get_tracking(order_id: str) -> str:
     """Retrieve the carrier tracking events and current shipment status."""
+    _require_demo_adapter()
     if not order_id.endswith("482"):
         return json.dumps({"tracking_number": f"TRK-{order_id[-6:]}", "status": "in_transit", "last_scan": "Fulfillment center", "last_scan_at": "2026-10-10T18:02:00Z"})
     return json.dumps({"tracking_number": "TRK-700184", "status": "delayed", "last_scan": "Regional hub", "last_scan_at": "2026-10-12T16:45:00Z"})
@@ -76,6 +93,7 @@ def get_tracking(order_id: str) -> str:
 @tool
 def get_carrier_updates(tracking_number: str) -> str:
     """Retrieve carrier-provided service updates for a tracking number."""
+    _require_demo_adapter()
     if tracking_number != "TRK-700184":
         return json.dumps([])
     return json.dumps([{"timestamp": "2026-10-12T16:45:00Z", "code": "WX", "description": "Weather disruption at regional hub"}])
@@ -84,6 +102,7 @@ def get_carrier_updates(tracking_number: str) -> str:
 @tool
 def get_delivery_exception(order_id: str) -> str:
     """Retrieve the latest delivery exception details for an order."""
+    _require_demo_adapter()
     if not order_id.endswith("482"):
         return json.dumps({"exception": None, "customer_contacted": False})
     return json.dumps({"exception": "Weather disruption", "first_seen": "2026-10-12T16:45:00Z", "customer_contacted": False})
@@ -92,24 +111,28 @@ def get_delivery_exception(order_id: str) -> str:
 @tool
 def create_ticket(order_id: str, title: str, details: str) -> str:
     """Create an operations ticket after the recommendation has passed review."""
+    _require_demo_adapter()
     return json.dumps({"ticket_id": f"OPS-{order_id[-5:]}", "status": "created", "title": title, "details": details})
 
 
 @tool
 def create_escalation(order_id: str, reason: str) -> str:
     """Create a supply-chain escalation for an order that needs intervention."""
+    _require_demo_adapter()
     return json.dumps({"escalation_id": f"ESC-{order_id[-5:]}", "status": "created", "reason": reason})
 
 
 @tool
 def send_notification(recipient: str, message: str) -> str:
     """Queue an operational notification for delivery."""
+    _require_demo_adapter()
     return json.dumps({"recipient": recipient, "status": "queued", "message": message})
 
 
 @tool
 def generate_case_report(order_id: str, summary: str) -> str:
     """Generate an audit-ready case report reference."""
+    _require_demo_adapter()
     return json.dumps({"report_id": f"RPT-{order_id[-5:]}", "status": "generated", "summary": summary})
 
 
@@ -137,9 +160,10 @@ def invoke_tool(
             request_id=context.get("request_id"),
             trace_id=context.get("trace_id"),
             span_id=span_id,
-            parent_span_id=context.get("root_span_id") or context.get("trace_id"),
+            parent_span_id=context.get("_current_span_id") or context.get("root_span_id") or context.get("trace_id"),
             workflow_id=context.get("workflow_id"),
             user_id=context.get("user_id"),
+            data_origin=context.get("data_origin", "LIVE"),
             agent_name=agent,
             tool_name=selected_tool.name,
             status="success",
@@ -149,14 +173,18 @@ def invoke_tool(
     except Exception as error:
         end_span(context, selected_tool.name, "tool", span_id, started, "error", {"agent_name": agent, "error_type": type(error).__name__})
         record_error(context, f"tool:{selected_tool.name}", error)
+        if isinstance(error, (PermissionError, ValueError)):
+            record_guardrail_event(context, {"guardrail": "tool_invocation", "decision": "BLOCK", "reason_code": type(error).__name__, "severity": "high"})
         emit_event(
             "tool.call",
             severity="ERROR",
             request_id=context.get("request_id"),
             trace_id=context.get("trace_id"),
             span_id=span_id,
+            parent_span_id=context.get("_current_span_id") or context.get("root_span_id") or context.get("trace_id"),
             workflow_id=context.get("workflow_id"),
             user_id=context.get("user_id"),
+            data_origin=context.get("data_origin", "LIVE"),
             agent_name=agent,
             tool_name=selected_tool.name,
             status="error",

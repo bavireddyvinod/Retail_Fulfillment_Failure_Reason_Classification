@@ -81,6 +81,8 @@ def observability_overview(data_origin: str = Query(default="LIVE", pattern="^(L
         counts = dict(session.query(TelemetryEvent.event_type, func.count(TelemetryEvent.id)).filter(TelemetryEvent.data_origin == data_origin).group_by(TelemetryEvent.event_type).all())
         active_alerts = session.query(AlertEvent).filter(AlertEvent.data_origin == data_origin, AlertEvent.status == "active").count()
         pending_approvals = session.query(Workflow).filter(Workflow.status == "awaiting_approval").count() if data_origin == "LIVE" else 0
+        infrastructure = _system_snapshot() if data_origin == "LIVE" else {"status": "unavailable", "reason": "The demo seed contains no measured process or host resource metrics."}
+        database = _database_snapshot() if data_origin == "LIVE" else {"status": "unavailable", "reason": "A demo record is not a database health measurement."}
         return {
             "data_origin": data_origin,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -92,8 +94,8 @@ def observability_overview(data_origin: str = Query(default="LIVE", pattern="^(L
             "guardrails": {"checks": counts.get("guardrail.decision", 0), "blocked": session.query(TelemetryEvent).filter(TelemetryEvent.data_origin == data_origin, TelemetryEvent.event_type == "guardrail.decision", TelemetryEvent.status == "BLOCK").count()},
             "pending_approvals": pending_approvals,
             "active_alerts": active_alerts,
-            "infrastructure": _system_snapshot(),
-            "database": _database_snapshot(),
+            "infrastructure": infrastructure,
+            "database": database,
             "drift_status": "UNAVAILABLE",
         }
 
@@ -175,9 +177,9 @@ def get_metrics(metric: str, since_minutes: int = Query(default=1440, ge=1, le=1
     if metric not in {*_EVENT_TYPES, "system", "database", "cost"}:
         raise HTTPException(status_code=404, detail="Metric category not found")
     if metric == "system":
-        return {"metric": "system", "data_origin": "LIVE", "snapshot": _system_snapshot(), "items": []}
+        return {"metric": "system", "data_origin": data_origin, "snapshot": _system_snapshot() if data_origin == "LIVE" else {"status": "unavailable", "reason": "No demo host resource measurements are available."}, "items": []}
     if metric == "database":
-        return {"metric": "database", "data_origin": "LIVE", "snapshot": _database_snapshot(), "items": []}
+        return {"metric": "database", "data_origin": data_origin, "snapshot": _database_snapshot() if data_origin == "LIVE" else {"status": "unavailable", "reason": "Demo telemetry is not a database health measurement."}, "items": []}
     with SessionLocal() as session:
         event_type = _EVENT_TYPES.get(metric)
         query = _base_query(session, data_origin).filter(TelemetryEvent.created_at >= datetime.now(timezone.utc) - timedelta(minutes=since_minutes))
@@ -248,10 +250,11 @@ def drift_summary(data_origin: str = Query(default="LIVE", pattern="^(LIVE|DEMO)
         current, reference = dict(current_rows), dict(reference_rows)
         sufficient = sum(current.values()) >= 10 and sum(reference.values()) >= 10
         score = _js_divergence(reference, current) if sufficient else None
+        prediction_status = "UNAVAILABLE" if not sufficient else "CRITICAL" if score >= .25 else "WARNING" if score >= .1 else "STABLE"
         return {
-            "overall_status": "UNAVAILABLE" if not sufficient else "WARNING" if score >= .1 else "STABLE",
+            "overall_status": prediction_status,
             "data_origin": "LIVE",
-            "prediction": {"status": "WARNING" if score is not None and score >= .1 else "STABLE" if score is not None else "UNAVAILABLE", "method": "Jensen-Shannon divergence", "score": score, "reference_count": sum(reference.values()), "current_count": sum(current.values()), "reference_distribution": reference, "current_distribution": current},
+            "prediction": {"status": prediction_status, "method": "Jensen-Shannon divergence", "score": score, "reference_count": sum(reference.values()), "current_count": sum(current.values()), "reference_distribution": reference, "current_distribution": current},
             "data": {"status": "UNAVAILABLE", "reason": "Operational feature reference distributions are not configured."},
             "concept": {"status": "UNAVAILABLE", "reason": "Verified outcome labels are not available."},
             "prompt": {"status": "UNAVAILABLE", "reason": "Versioned prompt baseline comparison is not configured."},
@@ -259,6 +262,16 @@ def drift_summary(data_origin: str = Query(default="LIVE", pattern="^(LIVE|DEMO)
             "output": {"status": "UNAVAILABLE", "reason": "Groundedness reference evaluations are not configured."},
             "window": {"reference_start": reference_start.isoformat(), "current_start": current_start.isoformat(), "end": now.isoformat()},
         }
+
+
+@router.get("/drift/{drift_type}")
+def drift_by_type(drift_type: str, data_origin: str = Query(default="LIVE", pattern="^(LIVE|DEMO)$")):
+    names = {"data", "model", "prediction", "concept", "prompt", "retrieval", "output"}
+    if drift_type not in names:
+        raise HTTPException(status_code=404, detail="Drift category not found")
+    summary = drift_summary(data_origin)
+    selected = summary.get("prediction") if drift_type == "model" else summary.get(drift_type)
+    return {"drift_type": drift_type, "data_origin": summary["data_origin"], "overall_status": summary["overall_status"], **(selected or {"status": "UNAVAILABLE", "reason": "No measurement is configured."})}
 
 
 @router.get("/guardrails")

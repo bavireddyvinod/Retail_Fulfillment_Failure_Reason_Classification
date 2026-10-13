@@ -9,6 +9,7 @@ class AgentState(TypedDict, total=False):
     root_span_id: str
     session_id: str
     user_id: str
+    data_origin: str
     user_query: str
     order_id: str
     conversation_history: list[dict[str, Any]]

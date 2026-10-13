@@ -1,4 +1,6 @@
 import re
+from hashlib import sha256
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,7 @@ def _policy_chunks() -> list[dict[str, Any]]:
                     "content": chunk.page_content,
                     "metadata": {
                         "document_id": path.stem,
+                        "chunk_id": sha256(f"{path.stem}:{chunk.metadata['start_index']}:{chunk.page_content}".encode("utf-8")).hexdigest(),
                         "title": title,
                         "source": path.name,
                         "section": section,
@@ -48,6 +51,7 @@ def _policy_chunks() -> list[dict[str, Any]]:
                         "page": len(chunks) + 1,
                         "category": path.stem.split("-")[0],
                         "effective_date": "2026-01-01",
+                        "approval_status": "approved",
                         "start_index": chunk.metadata["start_index"],
                     },
                 })
@@ -105,11 +109,17 @@ def retrieve_policy_context(query: str, category: str = "") -> tuple[str, list[d
     if settings.openai_api_key:
         try:
             store = _get_vectorstore()
-            vector_filter = {"category": category_filter} if category_filter else None
+            metadata_conditions = [
+                {"approval_status": "approved"},
+                {"effective_date": {"$lte": datetime.now(timezone.utc).date().isoformat()}},
+            ]
+            if category_filter:
+                metadata_conditions.append({"category": category_filter})
+            vector_filter = {"$and": metadata_conditions}
             try:
                 matches = store.max_marginal_relevance_search(query, k=8, fetch_k=20, filter=vector_filter)
             except (TypeError, ValueError):
-                matches = store.max_marginal_relevance_search(query, k=8, fetch_k=20)
+                matches = []
             for rank, item in enumerate(matches, start=1):
                 content = item.page_content
                 existing = fused.get(content, {"content": content, "metadata": item.metadata, "score": 0})

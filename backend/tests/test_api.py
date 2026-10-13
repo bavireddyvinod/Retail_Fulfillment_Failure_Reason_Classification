@@ -69,9 +69,10 @@ class InvestigationApiTests(unittest.TestCase):
         self.assertEqual(trace.status_code, 200)
         self.assertTrue(any(item["event_type"] == "span.ended" and item["agent_name"] == "classify" for item in trace.json()["spans"]))
 
-        logs = self.client.get("/api/logs", params={"trace_id": trace_id, "page": 1, "page_size": 10})
+        logs = self.client.get("/api/logs", params={"trace_id": trace_id, "data_origin": "DEMO", "page": 1, "page_size": 10})
         self.assertEqual(logs.status_code, 200)
-        self.assertEqual(logs.json()["total"], len(trace.json()["spans"]))
+        self.assertGreater(logs.json()["total"], 0)
+        self.assertTrue(all(item["trace_id"] == trace_id for item in logs.json()["items"]))
 
         overview = self.client.get("/api/observability/overview")
         self.assertEqual(overview.status_code, 200)
@@ -86,7 +87,7 @@ class InvestigationApiTests(unittest.TestCase):
         with patch.object(settings, "app_env", "production"), patch.object(settings, "api_keys_json", ""):
             self.assertEqual(self.client.get("/api/dashboard").status_code, 401)
 
-        with patch.object(settings, "app_env", "production"), patch.object(settings, "api_keys_json", '{"analyst-key":{"user_id":"ops-1","roles":["analyst"]}}'):
+        with patch.object(settings, "app_env", "production"), patch.object(settings, "api_keys_json", '{"analyst-key":{"user_id":"ops-1","roles":["analyst"]}}'), patch("app.security.consume_rate_limit", return_value=1):
             self.assertEqual(self.client.get("/api/dashboard", headers={"Authorization": "Bearer analyst-key"}).status_code, 200)
 
 

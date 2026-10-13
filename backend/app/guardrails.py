@@ -1,4 +1,5 @@
 import re
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,11 +34,14 @@ class Principal:
 
 def resolve_principal(token: str | None, app_env: str | None = None) -> Principal | None:
     configured = settings.api_keys
-    if token and token in configured:
-        entry = configured[token]
+    key = next((candidate for candidate in configured if token and hmac.compare_digest(candidate, token)), None)
+    if key is not None:
+        entry = configured[key]
         if isinstance(entry, str):
             entry = {"user_id": entry, "roles": ["analyst"]}
         roles = entry.get("roles", []) if isinstance(entry, dict) else []
+        if isinstance(roles, str):
+            roles = [roles]
         user_id = entry.get("user_id", "service-user") if isinstance(entry, dict) else "service-user"
         return Principal(user_id=user_id, roles=frozenset(roles), authenticated=True)
     if (app_env or settings.app_env).lower() not in {"production", "prod"}:

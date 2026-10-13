@@ -154,14 +154,24 @@ def shipment_investigation(state: AgentState) -> dict[str, Any]:
 
 def policy_rag(state: AgentState) -> dict[str, Any]:
     query = f"{state.get('user_query', '')} {state.get('triage', {}).get('category', '')} fulfillment policy"
-    retrieval_started = perf_counter()
-    context, citations = retrieve_policy_context(query, state.get("triage", {}).get("category", ""))
+    span_id = str(uuid4())
+    retrieval_started = start_span(state, "policy.retrieval", "rag", span_id)
+    try:
+        context, citations = retrieve_policy_context(query, state.get("triage", {}).get("category", ""))
+    except Exception as error:
+        end_span(state, "policy.retrieval", "rag", span_id, retrieval_started, "error", {"error_type": type(error).__name__})
+        record_error(state, "rag.retrieval", error)
+        raise
+    end_span(state, "policy.retrieval", "rag", span_id, retrieval_started, "completed", {"documents_retrieved": len(citations)})
     emit_event(
         "rag.retrieval",
         request_id=state.get("request_id"),
         trace_id=state.get("trace_id"),
         workflow_id=state.get("workflow_id"),
         user_id=state.get("user_id"),
+        data_origin=state.get("data_origin", "LIVE"),
+        span_id=span_id,
+        parent_span_id=state.get("_current_span_id") or state.get("root_span_id"),
         status="success" if citations else "no_results",
         latency_ms=round((perf_counter() - retrieval_started) * 1000, 3),
         details={"filter_category": state.get("triage", {}).get("category", ""), "top_k": 4, "documents_retrieved": len(citations), "document_ids": [item.get("document_id") for item in citations], "sources": [item.get("source") for item in citations], "citation_validation": "pending", "retriever": "hybrid_mmr"},
@@ -242,7 +252,8 @@ def classify_root_cause(state: AgentState) -> dict[str, Any]:
                 f"Operational evidence: {json.dumps([state.get('fulfillment_data'), state.get('inventory_data'), state.get('shipment_data')])}\n"
                 f"Policy context: {state.get('retrieved_context', '')}"
             )
-            llm_started = perf_counter()
+            llm_span_id = str(uuid4())
+            llm_started = start_span(state, "openai.classification", "llm", llm_span_id)
             raw_response = structured.invoke(prompt)
             result = raw_response.get("parsed")
             message = raw_response.get("raw")
@@ -251,14 +262,18 @@ def classify_root_cause(state: AgentState) -> dict[str, Any]:
                 "llm.call",
                 request_id=state.get("request_id"),
                 trace_id=state.get("trace_id"),
+                span_id=llm_span_id,
+                parent_span_id=state.get("_current_span_id") or state.get("root_span_id"),
                 workflow_id=state.get("workflow_id"),
                 user_id=state.get("user_id"),
+                data_origin=state.get("data_origin", "LIVE"),
                 agent_name="Root Cause Classification",
                 model_name=settings.openai_model,
                 status="success" if result else "invalid_output",
                 latency_ms=round((perf_counter() - llm_started) * 1000, 3),
                 details={"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"), "total_tokens": usage.get("total_tokens"), "usage_available": bool(usage), "prompt_template_version": "classification-v1"},
             )
+            end_span(state, "openai.classification", "llm", llm_span_id, llm_started, "completed" if result else "error", {"usage_available": bool(usage)})
             if result is None:
                 raise ValueError("Structured classification returned no parsed result")
             if result.failure_reason not in FAILURE_REASONS:
@@ -266,7 +281,7 @@ def classify_root_cause(state: AgentState) -> dict[str, Any]:
         except Exception as error:
             result = _rule_classification(state)
             errors.append(f"OpenAI classification fell back to evidence rules: {type(error).__name__}")
-            emit_event("llm.call", severity="ERROR", request_id=state.get("request_id"), trace_id=state.get("trace_id"), workflow_id=state.get("workflow_id"), agent_name="Root Cause Classification", model_name=settings.openai_model, status="error", details={"error_type": type(error).__name__})
+            emit_event("llm.call", severity="ERROR", request_id=state.get("request_id"), trace_id=state.get("trace_id"), span_id=locals().get("llm_span_id"), parent_span_id=state.get("_current_span_id") or state.get("root_span_id"), workflow_id=state.get("workflow_id"), data_origin=state.get("data_origin", "LIVE"), agent_name="Root Cause Classification", model_name=settings.openai_model, status="error", details={"error_type": type(error).__name__})
     else:
         errors = []
         result = _rule_classification(state)
@@ -332,7 +347,7 @@ def human_approval(state: AgentState) -> dict[str, Any]:
         "reason": "Low confidence or material business impact requires a human decision.",
     }
     if not existing.get("approval_id"):
-        emit_event("approval.requested", request_id=state.get("request_id"), trace_id=state.get("trace_id"), workflow_id=state.get("workflow_id"), user_id=state.get("user_id"), status="pending", details={"approval_id": approval_id, "order_id": state.get("order_id"), "proposed_action_ids": approval["proposed_action_ids"], "policy_version": "guardrails-v1"})
+        emit_event("approval.requested", request_id=state.get("request_id"), trace_id=state.get("trace_id"), workflow_id=state.get("workflow_id"), user_id=state.get("user_id"), data_origin=state.get("data_origin", "LIVE"), status="pending", details={"approval_id": approval_id, "order_id": state.get("order_id"), "proposed_action_ids": approval["proposed_action_ids"], "policy_version": "guardrails-v1"})
     return {
         "human_approval": approval,
         "status": "awaiting_approval" if status == "pending" else state.get("status", "investigating"),
@@ -478,6 +493,17 @@ def validation(state: AgentState) -> dict[str, Any]:
     unsupported_citations = [citation for citation in state.get("citations", []) if citation.get("quote") and citation["quote"][:60] not in context]
     if unsupported_citations:
         issues.append("A citation excerpt does not match the retrieved policy context")
+    citation_failures = len(invalid_citations) + len(unsupported_citations)
+    emit_event(
+        "rag.citation_validation",
+        severity="WARNING" if citation_failures else "INFO",
+        request_id=state.get("request_id"),
+        trace_id=state.get("trace_id"),
+        workflow_id=state.get("workflow_id"),
+        data_origin=state.get("data_origin", "LIVE"),
+        status="failed" if citation_failures else "passed",
+        details={"citations_checked": len(state.get("citations", [])), "invalid_citations": citation_failures, "document_ids": [item.get("document_id") for item in state.get("citations", [])]},
+    )
     blocked = "Classification confidence is outside the permitted range" in issues
     decision_value = "BLOCK" if blocked else "RETRY" if issues and state.get("retry_count", 0) < settings.max_agent_retries else "HUMAN_REVIEW" if issues else "PASS"
     result = {"decision": decision_value, "issues": issues, "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -506,7 +532,7 @@ def validation(state: AgentState) -> dict[str, Any]:
             "policy_version": "guardrails-v1",
             "reason": "; ".join(issues),
         }
-        emit_event("approval.requested", request_id=state.get("request_id"), trace_id=state.get("trace_id"), workflow_id=state.get("workflow_id"), user_id=state.get("user_id"), status="pending", details={"approval_id": approval["approval_id"], "order_id": state.get("order_id"), "reason": approval["reason"], "policy_version": "guardrails-v1"})
+        emit_event("approval.requested", request_id=state.get("request_id"), trace_id=state.get("trace_id"), workflow_id=state.get("workflow_id"), user_id=state.get("user_id"), data_origin=state.get("data_origin", "LIVE"), status="pending", details={"approval_id": approval["approval_id"], "order_id": state.get("order_id"), "reason": approval["reason"], "policy_version": "guardrails-v1"})
         return {"validation_result": result, "guardrail_decisions": decisions, "status": "awaiting_approval", "human_approval": approval, "agent_trace": _trace(state, "Validation & Guardrails", "Escalated validation issues for human review")}
     return {"validation_result": result, "guardrail_decisions": decisions, "agent_trace": _trace(state, "Validation & Guardrails", f"Validation {decision_value.lower()}: {len(issues)} issues")}
 
@@ -592,8 +618,9 @@ def _instrument_node(name, handler):
     def run(state: AgentState) -> dict[str, Any]:
         span_id = str(uuid4())
         started = start_span(state, name, "agent", span_id)
+        instrumented_state = {**state, "_current_span_id": span_id}
         try:
-            result = handler(state)
+            result = handler(instrumented_state)
             end_span(state, name, "agent", span_id, started, "completed", {"agent_run_id": span_id, "step_count": 1})
             return result
         except Exception as error:

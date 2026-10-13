@@ -30,8 +30,9 @@ services:
   web:
     build:
       context: ./web
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      API_BASE_URL: http://api:8000
+      API_SERVICE_KEY: ${API_SERVICE_KEY:-}
     ports:
       - "3000:3000"
     depends_on:

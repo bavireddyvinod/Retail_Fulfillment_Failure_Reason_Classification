@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy import inspect
 
-from app.cache import consume_rate_limit, get_dashboard, invalidate_dashboard, redis_health, set_dashboard
+from app.cache import get_dashboard, invalidate_dashboard, redis_health, set_dashboard
 from app.alerting import evaluate_alerts, install_default_rules
 from app.config import settings
 from app.database import initialize_database, list_states, load_state, persist_state
@@ -61,8 +61,10 @@ async def correlate_requests(request: Request, call_next):
     request.state.request_id = request_id
     request.state.trace_id = trace_id
     request.state.root_span_id = root_span_id
+    data_origin = "DEMO" if settings.app_env.lower() not in {"production", "prod"} and request.url.path.startswith("/api/investigations") else "LIVE"
+    request.state.data_origin = data_origin
     started = perf_counter()
-    emit_event("span.started", request_id=request_id, trace_id=trace_id, span_id=root_span_id, status="running", details={"span_name": "http.request", "span_kind": "server"})
+    emit_event("span.started", request_id=request_id, trace_id=trace_id, span_id=root_span_id, status="running", data_origin=data_origin, details={"span_name": "http.request", "span_kind": "server"})
     response = None
     try:
         response = await call_next(request)
@@ -78,6 +80,7 @@ async def correlate_requests(request: Request, call_next):
             trace_id=trace_id,
             status=str(response.status_code) if response else "error",
             latency_ms=round((perf_counter() - started) * 1000, 3),
+            data_origin=data_origin,
             details={"path": request.url.path, "method": request.method},
         )
         emit_event(
@@ -88,22 +91,12 @@ async def correlate_requests(request: Request, call_next):
             span_id=root_span_id,
             status="completed" if response and response.status_code < 500 else "error",
             latency_ms=round((perf_counter() - started) * 1000, 3),
+            data_origin=data_origin,
             details={"span_name": "http.request", "span_kind": "server", "http_status": response.status_code if response else None},
         )
         if response:
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Trace-ID"] = trace_id
-
-
-def enforce_rate_limit(request: Request, principal: Principal) -> None:
-    count = consume_rate_limit(f"rate:{principal.user_id}:{request.url.path}", settings.api_rate_limit_per_minute)
-    if count is None:
-        if settings.app_env.lower() in {"production", "prod"}:
-            raise HTTPException(status_code=503, detail="Rate-limit service is unavailable")
-        return
-    if count == 0:
-        emit_event("security.rate_limit", severity="WARNING", request_id=request.state.request_id, trace_id=request.state.trace_id, user_id=principal.user_id, status="blocked", details={"path": request.url.path})
-        raise HTTPException(status_code=429, detail="Request rate limit exceeded")
 
 
 class InvestigationRequest(BaseModel):
@@ -176,18 +169,18 @@ def _summary_state(state: dict) -> dict:
 
 @app.post("/api/investigations", status_code=201)
 def create_investigation(request: InvestigationRequest, http_request: Request, principal: Principal = Depends(current_principal)):
-    enforce_rate_limit(http_request, principal)
     workflow_id = str(uuid4())
+    session_id = request.session_id or str(uuid4())
     input_decision = inspect_input(request.query, request.order_id)
     state = {
         "workflow_id": workflow_id,
         "request_id": http_request.state.request_id,
         "trace_id": http_request.state.trace_id,
         "root_span_id": http_request.state.root_span_id,
-        "conversation_id": request.session_id or str(uuid4()),
-        "root_span_id": str(uuid4()),
-        "session_id": request.session_id or str(uuid4()),
+        "conversation_id": session_id,
+        "session_id": session_id,
         "user_id": principal.user_id,
+        "data_origin": http_request.state.data_origin,
         "user_query": request.query,
         "order_id": request.order_id,
         "conversation_history": [],
@@ -228,7 +221,6 @@ def get_investigation(workflow_id: str, _: Principal = Depends(current_principal
 @app.post("/api/investigations/{workflow_id}/approval")
 def decide_approval(workflow_id: str, request: ApprovalRequest, http_request: Request, principal: Principal = Depends(current_principal)):
     require_reviewer(principal)
-    enforce_rate_limit(http_request, principal)
     state = load_state(workflow_id)
     if not state:
         raise HTTPException(status_code=404, detail="Investigation not found")
@@ -290,7 +282,6 @@ def evaluation_summary(_: Principal = Depends(current_principal)):
 
 @app.post("/api/evaluations/run")
 def run_evaluations(request: Request, principal: Principal = Depends(current_principal)):
-    enforce_rate_limit(request, principal)
     result = run_evaluation_suite()
     persist_evaluation(result["results"])
     return result
