@@ -7,7 +7,7 @@ An operations case desk and multi-agent investigation API for retail fulfillment
 Start the full stack with Docker Compose:
 
 ```bash
-cp backend/.env.example backend/.env
+cp .env.example .env
 docker compose up --build
 ```
 
@@ -23,7 +23,7 @@ For frontend-only work, run `cd web && npm ci && npm run dev`. For the API witho
 - `backend/app/rag.py`: SOP ingestion and metadata, chunking, Chroma/OpenAI embeddings, metadata filters, MMR + lexical rank fusion, reranking, context compression, and citation records.
 - `backend/app/models.py`: PostgreSQL/SQLAlchemy tables for users, sessions, messages, workflows, agent runs, tool calls, failures, reports, approvals, audit logs, documents, chunks, and evaluations.
 - Redis stores a short-lived shared dashboard snapshot. Workflow state, tool results, approvals, and audit events are persisted to PostgreSQL.
-- `/api/evaluations/run` executes five golden classification cases and records scores; `/api/evaluations/summary` exposes operational quality aggregates.
+- `/api/evaluations/run` executes twelve golden classification cases and records scores; `/api/evaluations/summary` exposes operational quality aggregates.
 
 ## API
 

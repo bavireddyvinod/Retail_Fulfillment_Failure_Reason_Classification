@@ -8,6 +8,13 @@ GOLDEN_CASES = [
     {"query": "ORD-10998 has been confirmed as a lost shipment", "order_id": "ORD-10998", "expected": "Lost Shipment"},
     {"query": "ORD-10997 has an invalid delivery address", "order_id": "ORD-10997", "expected": "Address Error"},
     {"query": "ORD-10996 supplier replenishment missed its committed date", "order_id": "ORD-10996", "expected": "Supplier Delay"},
+    {"query": "ORD-10995 has an SLA breach due to an operations backlog", "order_id": "ORD-10995", "expected": "SLA Breach"},
+    {"query": "ORD-10994 last-mile delivery failed at the destination", "order_id": "ORD-10994", "expected": "Last Mile Failure"},
+    {"query": "ORD-10993 warehouse packing error on the order", "order_id": "ORD-10993", "expected": "Packing Error"},
+    {"query": "ORD-10992 payment was declined during approval", "order_id": "ORD-10992", "expected": "Payment Failure"},
+    {"query": "ORD-10991 was placed on a fraud hold", "order_id": "ORD-10991", "expected": "Fraud Hold"},
+    {"query": "ORD-10990 exceeded the fulfillment capacity constraint", "order_id": "ORD-10990", "expected": "Fulfillment Capacity Constraint"},
+    {"query": "ORD-10989 carrier confirmed return to origin", "order_id": "ORD-10989", "expected": "Return to Origin"},
 ]
 
 

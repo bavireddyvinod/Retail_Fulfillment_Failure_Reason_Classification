@@ -31,7 +31,7 @@ FAILURE_REASONS = [
     "Inventory Unavailable", "Inventory Allocation Error", "Picking Failure", "Packing Error",
     "Damaged Product", "Carrier Delay", "Lost Shipment", "Customer Cancellation", "Address Error",
     "Payment Failure", "Fraud Hold", "Supplier Delay", "SLA Breach", "Last Mile Failure",
-    "System Failure", "Unknown",
+    "System Failure", "Fulfillment Capacity Constraint", "Return to Origin", "Unknown",
 ]
 
 
@@ -137,16 +137,20 @@ def _rule_classification(state: AgentState) -> Classification:
     ]).lower()
     rules = [
         (["fraud", "fraud hold"], "Fraud Hold", "payment_risk"),
-        (["payment failure", "payment declined", "declined payment", "payment_status: declined"], "Payment Failure", "payment"),
+        (["payment failure", "payment declined", "payment was declined", "declined payment", "payment_status: declined"], "Payment Failure", "payment"),
         (["address", "invalid address"], "Address Error", "address_validation"),
         (["cancel", "cancellation"], "Customer Cancellation", "customer_request"),
         (["lost shipment", "shipment lost", "lost package"], "Lost Shipment", "carrier"),
+        (["return to origin", "returned to sender", "rto"], "Return to Origin", "carrier"),
+        (["sla breach", "missed sla", "service level breach"], "SLA Breach", "service_level"),
+        (["last mile", "last-mile", "failed delivery", "delivery exception"], "Last Mile Failure", "last_mile"),
         (["weather", "carrier delay", "delayed", "delivery delay", "late delivery"], "Carrier Delay", "carrier"),
         (["damaged", "damage"], "Damaged Product", "warehouse_or_transit"),
         (["packing", "packaging"], "Packing Error", "warehouse"),
         (["pick failure", "picking", "pick error"], "Picking Failure", "warehouse"),
         (["supplier", "replenishment"], "Supplier Delay", "supplier"),
         (["system", "integration", "api error"], "System Failure", "technology"),
+        (["fulfillment capacity", "capacity constraint", "capacity limit"], "Fulfillment Capacity Constraint", "capacity"),
         (["inventory allocation", "misallocated"], "Inventory Allocation Error", "inventory"),
         (["out of stock", "inventory unavailable"], "Inventory Unavailable", "inventory"),
     ]
@@ -265,6 +269,9 @@ def action_recommendation(state: AgentState) -> dict[str, Any]:
         "Picking Failure": ["Open a warehouse pick investigation", "Verify remaining stock"],
         "Damaged Product": ["Inspect transit and packing records", "Prepare a replacement decision"],
         "SLA Breach": ["Escalate to the service-level owner", "Review customer recovery options"],
+        "Last Mile Failure": ["Contact the last-mile carrier", "Verify the delivery exception and customer availability"],
+        "Return to Origin": ["Confirm the carrier return scan", "Review address correction and reship options"],
+        "Fulfillment Capacity Constraint": ["Check alternate fulfillment centers", "Review capacity allocation and promise dates"],
     }
     actions = recommendation_by_reason.get(reason, ["Create an operations investigation ticket", "Review customer impact and next steps"])
     order_id = state.get("order_id", "ORD-UNKNOWN")

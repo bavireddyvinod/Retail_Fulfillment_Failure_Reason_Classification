@@ -71,7 +71,7 @@ class WorkflowTests(unittest.TestCase):
     def test_golden_evaluation_cases_cover_failure_categories(self):
         result = run_evaluation_suite()
 
-        self.assertEqual(result["count"], 5)
+        self.assertEqual(result["count"], 12)
         self.assertEqual(result["accuracy"], 1.0)
         self.assertEqual(result["citation_coverage"], 1.0)
 
